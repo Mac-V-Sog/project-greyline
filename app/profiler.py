@@ -3,17 +3,19 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from app.models import FieldProfile, RecordProfile
+from app.patterns import PHONE_RE, CELL_ID_RE, looks_like_phone, looks_like_datetime
 from app.shape import fingerprint_fields
 
+logger = logging.getLogger("greyline.profiler")
+
 CSV_DELIMITERS = [",", ";", "\t", "|"]
-PHONE_RE = re.compile(r"^\+?\d{7,15}$")
-CELL_ID_RE = re.compile(r"^[0-9A-Za-z_-]{4,32}$")
 DEFAULT_SAMPLE_ROWS = 500
 DEFAULT_SNIFF_BYTES = 256 * 1024
 
@@ -25,17 +27,29 @@ def _bytes_to_text(data: bytes) -> str:
 def guess_format(filename: str, sample_bytes: bytes) -> str:
     lower = filename.lower()
     if lower.endswith(".jsonl") or lower.endswith(".ndjson"):
-        return "jsonl"
+        result = "jsonl"
+        logger.debug("detected format=%s for %s", result, filename)
+        return result
     if lower.endswith(".json"):
-        return "json"
+        result = "json"
+        logger.debug("detected format=%s for %s", result, filename)
+        return result
     if lower.endswith(".csv") or lower.endswith(".tsv"):
-        return "csv"
+        result = "csv"
+        logger.debug("detected format=%s for %s", result, filename)
+        return result
     stripped = _bytes_to_text(sample_bytes).lstrip()
     if stripped.startswith("{") or stripped.startswith("["):
-        return "json"
+        result = "json"
+        logger.debug("detected format=%s for %s", result, filename)
+        return result
     if "\n{" in stripped:
-        return "jsonl"
-    return "csv"
+        result = "jsonl"
+        logger.debug("detected format=%s for %s", result, filename)
+        return result
+    result = "csv"
+    logger.debug("detected format=%s for %s", result, filename)
+    return result
 
 
 def _sniff_csv_delimiter(sample_text: str) -> str:
@@ -173,28 +187,6 @@ def _collect_columns(rows: list[dict[str, Any]]) -> list[str]:
     return seen
 
 
-def _looks_like_phone(value: str) -> bool:
-    compact = re.sub(r"[\s()-]", "", value)
-    return bool(PHONE_RE.match(compact))
-
-
-def _looks_like_datetime(value: str) -> bool:
-    candidates = [
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%dT%H:%M:%S",
-        "%d/%m/%Y %H:%M",
-        "%Y/%m/%d %H:%M:%S",
-    ]
-    for fmt in candidates:
-        try:
-            datetime.strptime(value, fmt)
-            return True
-        except ValueError:
-            continue
-    return value.isdigit() and len(value) >= 10
-
-
 def _semantic_hints(values: list[Any], name: str) -> list[str]:
     hints: set[str] = set()
     samples = [str(v).strip("'\"") for v in values if v not in (None, "")][:5]
@@ -210,9 +202,9 @@ def _semantic_hints(values: list[Any], name: str) -> list[str]:
     if any(token in lname for token in ["phone", "msisdn", "number", "party", "a_no", "b_no", "from", "to"]):
         hints.add("name:party_like")
 
-    if samples and all(_looks_like_phone(v) for v in samples[:3]):
+    if samples and all(looks_like_phone(v) for v in samples[:3]):
         hints.add("value:phone_like")
-    if samples and all(_looks_like_datetime(v) for v in samples[:3]):
+    if samples and all(looks_like_datetime(v) for v in samples[:3]):
         hints.add("value:datetime_like")
     if samples and all(CELL_ID_RE.match(v) for v in samples[:3]):
         hints.add("value:identifier_like")
@@ -270,6 +262,7 @@ def _build_profile(rows: list[dict[str, Any]], *, source_name: str, file_format:
 
 
 def profile_bytes(data: bytes, filename: str, source_name: str, sample_rows: int = DEFAULT_SAMPLE_ROWS) -> RecordProfile:
+    logger.info("profiling bytes filename=%s source_name=%s", filename, source_name)
     file_format = guess_format(filename, data[:DEFAULT_SNIFF_BYTES])
     delimiter = None
     if file_format == "csv":
@@ -282,6 +275,7 @@ def profile_bytes(data: bytes, filename: str, source_name: str, sample_rows: int
 
 
 def profile_fileobj(fileobj: BinaryIO, filename: str, source_name: str, sample_rows: int = DEFAULT_SAMPLE_ROWS) -> RecordProfile:
+    logger.info("profiling file=%s source_name=%s sample_rows=%d", filename, source_name, sample_rows)
     fileobj.seek(0)
     sniff = fileobj.read(DEFAULT_SNIFF_BYTES)
     file_format = guess_format(filename, sniff)

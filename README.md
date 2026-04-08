@@ -38,6 +38,24 @@ Typical use cases include:
 - preserve provenance so every canonical field can be traced back
 - quarantine bad or ambiguous rows rather than silently forcing them through
 
+## Architecture
+
+| Module | Responsibility |
+|---|---|
+| `app/main.py` | FastAPI app with lifespan (DB init, logging config) |
+| `app/api.py` | HTTP endpoints with async threadpool delegation |
+| `app/profiler.py` | Streaming file profiling and shape fingerprinting |
+| `app/patterns.py` | Shared regex patterns and detection functions |
+| `app/mapper.py` | Ollama LLM mapping with Protocol abstraction |
+| `app/validator.py` | Deterministic mapping validation with named confidence thresholds |
+| `app/ingest.py` | Streaming canonical ingest with family routing and quarantine |
+| `app/family_classifier.py` | Multi-family row classification |
+| `app/memory.py` | SQLite-backed governed mapping storage |
+| `app/ontology.py` | Target ontology definition |
+| `app/shape.py` | SHA-256 shape fingerprinting |
+| `app/quarantine.py` | Quarantine reason enum and record model |
+| `app/models.py` | Pydantic v2 data models |
+
 ## Current capabilities
 
 - bounded profiling for large CSV and NDJSON files
@@ -50,6 +68,10 @@ Typical use cases include:
 - quarantine output for rows that cannot be trusted
 - per-run ingest stats with row counts, errors, coercions, and family breakdowns
 - health checks for Ollama reachability and model availability
+- path traversal protection for user-supplied output paths
+- upload file size limits (500 MB max)
+- structured logging across all modules (greyline.* namespace)
+- shared pattern detection module for consistent phone/datetime/identifier recognition
 
 ## Requirements
 
@@ -111,6 +133,8 @@ export OLLAMA_MODEL=qwen2.5:3b
 ```bash
 uvicorn app.main:app --reload
 ```
+
+> The SQLite database (`greyline.db`) is created automatically on first startup via the application lifespan event.
 
 ### 5. Check health
 
@@ -275,8 +299,23 @@ This README aims to cover those without turning into marketing sludge.
 ## Tests
 
 ```bash
-pytest -q
+pip install -e .[dev]
+pytest -v
 ```
+
+The test suite covers profiling, mapping, validation, ingest, family classification, memory/storage, API endpoints, shared patterns, and shape fingerprinting — 61 tests total.
+
+## Changelog
+
+### v0.1.1 — Code quality improvements
+
+- **DRY**: Extracted shared patterns (`PHONE_RE`, `CELL_ID_RE`, `DATETIME_FORMATS`, `looks_like_phone`, `looks_like_datetime`) into `app/patterns.py`
+- **Readability**: Replaced 6-tuple return from `canonicalize_row()` with `CanonicalizeResult` NamedTuple
+- **Maintainability**: Extracted 9 magic confidence thresholds in validator to named constants with rationale comments
+- **Observability**: Added structured logging (`greyline.*` namespace) across all modules
+- **Infrastructure**: Moved `init_db()` and `OUTPUT_DIR` creation from import-time to FastAPI lifespan; fixed async event loop blocking with `run_in_threadpool()`
+- **Security**: Added path traversal validation for output paths; added 500 MB upload size limit; consolidated project naming (database now `greyline.db`)
+- **Test coverage**: Added 46 new tests — total 61 — covering memory, family classifier, API endpoints, patterns, and shape fingerprinting
 
 ## License
 

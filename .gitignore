@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+outputs/
+greyline.db
+schema_sidecar.db
+.venv/
+*.egg
+dist/
+build/

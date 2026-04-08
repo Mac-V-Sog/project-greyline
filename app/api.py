@@ -1,24 +1,39 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from app.ingest import ingest_bundle_to_ndjson, ingest_to_ndjson
-from app.memory import grouped_examples, init_db, promote_mapping, search_memory
+from app.memory import grouped_examples, promote_mapping, search_memory
 from app.mapper import get_mapper
 from app.models import ApprovedMapping, IngestBundleRequest, IngestRequest, MapRequest, MappingProposal, RecordProfile
 from app.ontology import load_ontology
 from app.profiler import DEFAULT_SAMPLE_ROWS, profile_fileobj
 from app.validator import validate_proposal
 
+logger = logging.getLogger("greyline.api")
+
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+
 router = APIRouter()
-init_db()
+
+
+async def _check_upload_size(file: UploadFile) -> None:
+    """Raise HTTPException if the uploaded file exceeds MAX_UPLOAD_BYTES."""
+    file.file.seek(0, 2)  # seek to end
+    size = file.file.tell()
+    file.file.seek(0)  # reset to start
+    if size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large: {size} bytes (max {MAX_UPLOAD_BYTES})")
 
 
 @router.get('/health')
 def health() -> dict[str, Any]:
+    logger.info("health check")
     mapper = get_mapper()
     try:
         ollama = mapper.ping()
@@ -39,14 +54,17 @@ async def profile(
     source_name: str = Form('uploaded_source'),
     sample_rows: int = Form(DEFAULT_SAMPLE_ROWS),
 ) -> RecordProfile:
+    logger.info("profiling file=%s source_name=%s sample_rows=%d", file.filename, source_name, sample_rows)
     try:
-        return profile_fileobj(file.file, file.filename or 'uploaded', source_name, sample_rows=sample_rows)
+        await _check_upload_size(file)
+        return await run_in_threadpool(profile_fileobj, file.file, file.filename or 'uploaded', source_name, sample_rows=sample_rows)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post('/map')
 def map_profile(req: MapRequest) -> MappingProposal:
+    logger.info("mapping profile source_name=%s", req.profile.source_name)
     mapper = get_mapper()
     try:
         return mapper.map(req)
@@ -63,8 +81,10 @@ async def map_file(
     ontology_json: str | None = Form(None),
     sample_rows: int = Form(DEFAULT_SAMPLE_ROWS),
 ) -> dict[str, Any]:
+    logger.info("mapping file=%s source_name=%s provider=%s source_type=%s", file.filename, source_name, provider, source_type)
     try:
-        profile = profile_fileobj(file.file, file.filename or 'uploaded', source_name, sample_rows=sample_rows)
+        await _check_upload_size(file)
+        profile = await run_in_threadpool(profile_fileobj, file.file, file.filename or 'uploaded', source_name, sample_rows=sample_rows)
         ontology = json.loads(ontology_json) if ontology_json else load_ontology()
         prior_examples = grouped_examples(
             shape_fingerprint=profile.shape_fingerprint,
@@ -81,8 +101,9 @@ async def map_file(
             },
             prior_examples=prior_examples,
         )
-        proposal = get_mapper().map(req)
-        validation = validate_proposal(profile, proposal)
+        proposal = await run_in_threadpool(get_mapper().map, req)
+        validation = await run_in_threadpool(validate_proposal, profile, proposal)
+        logger.info("map-file complete source_name=%s accepted=%d needs_review=%d rejected=%d", source_name, len(validation.accepted), len(validation.needs_review), len(validation.rejected))
         return {
             'profile': profile.model_dump(),
             'proposal': proposal.model_dump(),
@@ -95,6 +116,7 @@ async def map_file(
 
 @router.post('/validate')
 def validate(payload: dict[str, Any]) -> dict[str, Any]:
+    logger.info("validating proposal")
     try:
         profile = RecordProfile.model_validate(payload['profile'])
         proposal = MappingProposal.model_validate(payload['proposal'])
@@ -107,6 +129,7 @@ def validate(payload: dict[str, Any]) -> dict[str, Any]:
 @router.post('/promote')
 def promote(payload: ApprovedMapping) -> dict[str, Any]:
     count = promote_mapping(payload)
+    logger.info("promoting mapping shape=%s record_type=%s count=%d", payload.shape_fingerprint, payload.record_type, count)
     return {'stored': count}
 
 
@@ -124,7 +147,9 @@ async def ingest_file(
     output_path: str | None = Form(None),
     max_rows: int | None = Form(None),
 ) -> dict[str, Any]:
+    logger.info("ingesting file=%s source_name=%s", file.filename, source_name)
     try:
+        await _check_upload_size(file)
         if mapping_bundle_json:
             payload = IngestBundleRequest.model_validate({
                 **json.loads(mapping_bundle_json),
@@ -132,7 +157,7 @@ async def ingest_file(
                 'output_path': output_path,
                 'max_rows': max_rows,
             })
-            return ingest_bundle_to_ndjson(
+            return await run_in_threadpool(ingest_bundle_to_ndjson,
                 file.file,
                 file.filename or 'uploaded',
                 families=payload.families,
@@ -147,7 +172,7 @@ async def ingest_file(
                 'output_path': output_path,
                 'max_rows': max_rows,
             })
-            return ingest_to_ndjson(
+            return await run_in_threadpool(ingest_to_ndjson,
                 file.file,
                 file.filename or 'uploaded',
                 mappings=payload.mappings,

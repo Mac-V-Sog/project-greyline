@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from app.models import ApprovedMapping
 
-DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "schema_sidecar.db")
+logger = logging.getLogger("greyline.memory")
+
+DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "greyline.db")
 
 
 def get_conn(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -16,6 +19,7 @@ def get_conn(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
+    logger.info("initializing schema memory db at %s", db_path)
     conn = get_conn(db_path)
     with conn:
         conn.execute(
@@ -72,10 +76,12 @@ def promote_mapping(payload: ApprovedMapping, db_path: str = DEFAULT_DB_PATH) ->
             )
             count += 1
     conn.close()
+    logger.info("promoted %d mapping records shape=%s record_type=%s", count, payload.shape_fingerprint, payload.record_type)
     return count
 
 
 def search_memory(shape_fingerprint: str | None = None, source_type: str | None = None, provider: str | None = None, db_path: str = DEFAULT_DB_PATH) -> list[dict[str, Any]]:
+    logger.debug("searching memory shape=%s source_type=%s provider=%s", shape_fingerprint, source_type, provider)
     conn = get_conn(db_path)
     where = []
     params: list[Any] = []

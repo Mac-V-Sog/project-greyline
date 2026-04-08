@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Protocol
 
 import httpx
 
 from app.models import MapRequest, MappingProposal
+
+logger = logging.getLogger("greyline.mapper")
 
 
 class Mapper(Protocol):
@@ -23,6 +26,7 @@ class OllamaMapper:
         self.model = model or os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 
     def ping(self) -> dict:
+        logger.debug("pinging ollama at %s", self.base_url)
         with httpx.Client(timeout=20.0) as client:
             tags = client.get(f"{self.base_url}/api/tags")
             tags.raise_for_status()
@@ -37,6 +41,7 @@ class OllamaMapper:
         }
 
     def map(self, req: MapRequest) -> MappingProposal:
+        logger.info("requesting mapping from ollama model=%s fields=%d", self.model, len(req.profile.fields))
         schema = MappingProposal.model_json_schema()
         payload = {
             "model": self.model,
@@ -51,11 +56,14 @@ class OllamaMapper:
             data = response.json()
         raw = data.get("message", {}).get("content", "")
         if not raw:
+            logger.error("ollama returned empty response")
             raise RuntimeError("Ollama returned an empty response")
         parsed = json.loads(raw)
         proposal = MappingProposal.model_validate(parsed)
         if not proposal.mappings and proposal.record_confidence < 0.1:
+            logger.error("ollama returned unusable proposal record_confidence=%.2f", proposal.record_confidence)
             raise RuntimeError("Ollama returned an unusable mapping proposal")
+        logger.info("mapping complete record_type=%s confidence=%.2f mappings=%d", proposal.record_type, proposal.record_confidence, len(proposal.mappings))
         return proposal
 
     def _build_messages(self, req: MapRequest) -> list[dict[str, str]]:

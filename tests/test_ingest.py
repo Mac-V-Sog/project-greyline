@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.ingest import canonicalize_row, ingest_bundle_to_ndjson, ingest_to_ndjson
+from app.ingest import OUTPUT_DIR, canonicalize_row, ingest_bundle_to_ndjson, ingest_to_ndjson
 from app.models import MappingCandidate, MappingFamily
 
 
@@ -20,7 +20,7 @@ def test_canonicalize_row_applies_basic_transforms() -> None:
         MappingCandidate(source_field="START", target_field="start_time", confidence=0.9, rationale="", relation="exact"),
         MappingCandidate(source_field="DUR", target_field="duration_sec", confidence=0.9, rationale="", relation="exact"),
     ]
-    doc, quarantine, coercions, mapped_counts, null_counts, total_targets = canonicalize_row(
+    result = canonicalize_row(
         row,
         mappings,
         record_type="call_event",
@@ -29,19 +29,19 @@ def test_canonicalize_row_applies_basic_transforms() -> None:
         family_id="calls",
         mapping_id="map_calls_v1",
     )
-    assert quarantine is None
-    assert doc is not None
-    assert doc["family_id"] == "calls"
-    assert doc["governance"]["mapping_id"] == "map_calls_v1"
-    assert doc["canonical"]["party_a"]["msisdn"] == "+4712345678"
-    assert doc["canonical"]["party_b"]["msisdn"] == "4799999999"
-    assert doc["canonical"]["duration_sec"] == 62
-    assert doc["canonical"]["start_time"].endswith("Z")
-    assert len(doc["provenance"]["field_mappings"]) == 4
-    assert coercions["party_a.msisdn"] == 1
-    assert mapped_counts["duration_sec"] == 1
-    assert sum(null_counts.values()) == 0
-    assert total_targets == 4
+    assert result.quarantine is None
+    assert result.doc is not None
+    assert result.doc["family_id"] == "calls"
+    assert result.doc["governance"]["mapping_id"] == "map_calls_v1"
+    assert result.doc["canonical"]["party_a"]["msisdn"] == "+4712345678"
+    assert result.doc["canonical"]["party_b"]["msisdn"] == "4799999999"
+    assert result.doc["canonical"]["duration_sec"] == 62
+    assert result.doc["canonical"]["start_time"].endswith("Z")
+    assert len(result.doc["provenance"]["field_mappings"]) == 4
+    assert result.coercions["party_a.msisdn"] == 1
+    assert result.mapped_field_counts["duration_sec"] == 1
+    assert sum(result.null_field_counts.values()) == 0
+    assert result.total_targets == 4
 
 
 def test_canonicalize_row_quarantines_bad_timestamp() -> None:
@@ -50,10 +50,10 @@ def test_canonicalize_row_quarantines_bad_timestamp() -> None:
         MappingCandidate(source_field="A_NO", target_field="party_a.msisdn", confidence=0.9, rationale="", relation="exact"),
         MappingCandidate(source_field="START", target_field="start_time", confidence=0.9, rationale="", relation="exact"),
     ]
-    doc, quarantine, *_ = canonicalize_row(row, mappings, record_type="call_event", source_name="test", row_number=7)
-    assert doc is None
-    assert quarantine is not None
-    assert "timestamp_parse_failed" in quarantine.failure_reasons
+    result = canonicalize_row(row, mappings, record_type="call_event", source_name="test", row_number=7)
+    assert result.doc is None
+    assert result.quarantine is not None
+    assert "timestamp_parse_failed" in result.quarantine.failure_reasons
 
 
 def test_ingest_to_ndjson_streams_csv_and_writes_output(tmp_path: Path) -> None:
@@ -70,7 +70,7 @@ def test_ingest_to_ndjson_streams_csv_and_writes_output(tmp_path: Path) -> None:
         MappingCandidate(source_field="START", target_field="start_time", confidence=0.9, rationale="", relation="exact"),
         MappingCandidate(source_field="DUR", target_field="duration_sec", confidence=0.9, rationale="", relation="exact"),
     ]
-    out = tmp_path / "out.ndjson"
+    out = OUTPUT_DIR / "out.ndjson"
     with src.open("rb") as f:
         result = ingest_to_ndjson(
             f,
@@ -106,7 +106,7 @@ def test_ingest_to_ndjson_writes_quarantine_and_stats(tmp_path: Path) -> None:
         MappingCandidate(source_field="START", target_field="start_time", confidence=0.9, rationale="", relation="exact"),
         MappingCandidate(source_field="DUR", target_field="duration_sec", confidence=0.9, rationale="", relation="exact"),
     ]
-    out = tmp_path / "accepted.ndjson"
+    out = OUTPUT_DIR / "accepted.ndjson"
     with src.open("rb") as f:
         result = ingest_to_ndjson(f, src.name, mappings, record_type="call_event", source_name="telecom_x", output_path=str(out))
     quarantine_path = Path(result["quarantine_output_path"])
@@ -156,7 +156,7 @@ def test_ingest_bundle_routes_mixed_rows_to_family_outputs(tmp_path: Path) -> No
             ],
         ),
     ]
-    out = tmp_path / "mixed_out.ndjson"
+    out = OUTPUT_DIR / "mixed_out.ndjson"
     with src.open("rb") as f:
         result = ingest_bundle_to_ndjson(f, src.name, families=families, source_name="mixed_source", output_path=str(out))
     assert result["rows_seen"] == 3

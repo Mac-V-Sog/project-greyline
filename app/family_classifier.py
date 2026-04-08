@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.models import MappingFamily
+
+logger = logging.getLogger("greyline.family_classifier")
 
 
 class FamilyDecision(BaseModel):
@@ -35,6 +38,7 @@ def _family_score(row: dict[str, Any], family: MappingFamily) -> tuple[float, li
 
 
 def choose_family(row: dict[str, Any], families: list[MappingFamily]) -> FamilyDecision:
+    logger.debug("choosing family for row families=%d", len(families))
     if not families:
         return FamilyDecision(reason="no_families_configured")
 
@@ -63,10 +67,12 @@ def choose_family(row: dict[str, Any], families: list[MappingFamily]) -> FamilyD
                 reason="ambiguous_family_match",
                 matched_source_fields=best_matched,
             )
-    return FamilyDecision(
+    decision = FamilyDecision(
         family_id=best_family.family_id,
         confidence=best_score,
         matched_mapping_id=best_family.mapping_id,
         reason="matched",
         matched_source_fields=best_matched,
     )
+    logger.debug("family decision family_id=%s confidence=%.2f reason=%s", decision.family_id, decision.confidence, decision.reason)
+    return decision

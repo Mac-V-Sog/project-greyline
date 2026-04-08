@@ -3,21 +3,50 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 import tempfile
 from collections import Counter
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, NamedTuple
 
 from app.family_classifier import choose_family
 from app.models import MappingCandidate, MappingFamily
+from app.patterns import DATETIME_FORMATS
 from app.profiler import DEFAULT_SNIFF_BYTES, _bytes_to_text, _sniff_csv_delimiter, guess_format
 from app.quarantine import QuarantineReason, QuarantineRecord
 
+logger = logging.getLogger("greyline.ingest")
+
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
-OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+def _ensure_output_dir() -> Path:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    return OUTPUT_DIR
+
+
+def _validate_output_path(output_path: str) -> Path:
+    """Validate that output_path resolves to a location within OUTPUT_DIR."""
+    resolved = Path(output_path).resolve()
+    output_dir_resolved = OUTPUT_DIR.resolve()
+    try:
+        resolved.relative_to(output_dir_resolved)
+    except ValueError:
+        raise ValueError(f"output_path must be within {output_dir_resolved}, got {resolved}")
+    return resolved
+
+
+class CanonicalizeResult(NamedTuple):
+    doc: dict[str, Any] | None
+    quarantine: QuarantineRecord | None
+    coercions: Counter[str]
+    mapped_field_counts: Counter[str]
+    null_field_counts: Counter[str]
+    total_targets: int
+
 
 _PHONE_CLEAN_RE = re.compile(r"[\s()\-]")
 TIME_FIELDS = {"start_time", "end_time", "sent_time", "captured_time"}
@@ -108,14 +137,7 @@ def _compact_phone(value: str) -> str:
 
 def _parse_datetime(value: str) -> str | None:
     value = value.strip()
-    formats = [
-        '%Y-%m-%d %H:%M:%S',
-        '%Y-%m-%dT%H:%M:%SZ',
-        '%Y-%m-%dT%H:%M:%S',
-        '%d/%m/%Y %H:%M',
-        '%Y/%m/%d %H:%M:%S',
-    ]
-    for fmt in formats:
+    for fmt in DATETIME_FORMATS:
         try:
             dt = datetime.strptime(value, fmt)
             if dt.tzinfo is None:
@@ -189,7 +211,8 @@ def canonicalize_row(
     row_number: int,
     family_id: str = 'default',
     mapping_id: str | None = None,
-) -> tuple[dict[str, Any] | None, QuarantineRecord | None, Counter[str], Counter[str], Counter[str], int]:
+) -> CanonicalizeResult:
+    logger.debug("canonicalizing row=%d source_name=%s family_id=%s", row_number, source_name, family_id)
     canonical: dict[str, Any] = {}
     field_provenance: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -241,6 +264,7 @@ def canonicalize_row(
         warnings.extend(mapping.warnings)
 
     if failures:
+        logger.warning("row=%d quarantined reasons=%s", row_number, sorted({f['reason'] for f in failures}))
         quarantine = QuarantineRecord(
             row_number=row_number,
             source_name=source_name,
@@ -251,9 +275,17 @@ def canonicalize_row(
             details=failures,
             record_type=record_type,
         )
-        return None, quarantine, coercions, mapped_field_counts, null_field_counts, total_targets
+        return CanonicalizeResult(
+            doc=None,
+            quarantine=quarantine,
+            coercions=coercions,
+            mapped_field_counts=mapped_field_counts,
+            null_field_counts=null_field_counts,
+            total_targets=total_targets,
+        )
 
     if not field_provenance:
+        logger.warning("row=%d quarantined reasons=%s", row_number, [QuarantineReason.UNKNOWN_FIELD_SEMANTICS.value])
         quarantine = QuarantineRecord(
             row_number=row_number,
             source_name=source_name,
@@ -264,35 +296,50 @@ def canonicalize_row(
             details=[{'reason': QuarantineReason.UNKNOWN_FIELD_SEMANTICS.value}],
             record_type=record_type,
         )
-        return None, quarantine, coercions, mapped_field_counts, null_field_counts, total_targets
+        return CanonicalizeResult(
+            doc=None,
+            quarantine=quarantine,
+            coercions=coercions,
+            mapped_field_counts=mapped_field_counts,
+            null_field_counts=null_field_counts,
+            total_targets=total_targets,
+        )
 
-    return {
-        'family_id': family_id,
-        'record_type': record_type,
-        'canonical': canonical,
-        'source': {
-            'source_name': source_name,
-            'row_number': row_number,
-        },
-        'governance': {
-            'mapping_id': mapping_id,
+    return CanonicalizeResult(
+        doc={
             'family_id': family_id,
+            'record_type': record_type,
+            'canonical': canonical,
+            'source': {
+                'source_name': source_name,
+                'row_number': row_number,
+            },
+            'governance': {
+                'mapping_id': mapping_id,
+                'family_id': family_id,
+            },
+            'provenance': {
+                'raw_row': row,
+                'field_mappings': field_provenance,
+            },
+            'warnings': sorted({w for w in warnings if w}),
         },
-        'provenance': {
-            'raw_row': row,
-            'field_mappings': field_provenance,
-        },
-        'warnings': sorted({w for w in warnings if w}),
-    }, None, coercions, mapped_field_counts, null_field_counts, total_targets
+        quarantine=None,
+        coercions=coercions,
+        mapped_field_counts=mapped_field_counts,
+        null_field_counts=null_field_counts,
+        total_targets=total_targets,
+    )
 
 
 def _derive_output_paths(output_path: str | None) -> tuple[Path, Path, Path, Path]:
+    _ensure_output_dir()
     if output_path is None:
         handle = tempfile.NamedTemporaryFile(prefix='accepted_', suffix='.ndjson', delete=False, dir=OUTPUT_DIR)
         accepted_path = Path(handle.name)
         handle.close()
     else:
-        accepted_path = Path(output_path)
+        accepted_path = _validate_output_path(output_path)
         accepted_path.parent.mkdir(parents=True, exist_ok=True)
     base = accepted_path.with_suffix('')
     quarantine_path = base.parent / f'{base.name}.quarantine.ndjson'
@@ -340,6 +387,7 @@ def ingest_bundle_to_ndjson(
     output_path: str | None = None,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
+    logger.info("starting bundle ingest source_name=%s families=%d max_rows=%s", source_name, len(families), max_rows)
     if not families:
         raise ValueError('At least one family mapping is required')
 
@@ -384,7 +432,7 @@ def ingest_bundle_to_ndjson(
                     error_counts.update(quarantine.failure_reasons)
                 else:
                     family = next(f for f in families if f.family_id == decision.family_id)
-                    doc, quarantine, coercions, mapped_counts, null_counts, total_targets = canonicalize_row(
+                    result = canonicalize_row(
                         row,
                         family.mappings,
                         record_type=family.record_type,
@@ -393,17 +441,17 @@ def ingest_bundle_to_ndjson(
                         family_id=family.family_id,
                         mapping_id=family.mapping_id,
                     )
-                    coercions_by_field.update(coercions)
-                    mapped_field_counts.update(mapped_counts)
-                    null_field_counts.update(null_counts)
+                    coercions_by_field.update(result.coercions)
+                    mapped_field_counts.update(result.mapped_field_counts)
+                    null_field_counts.update(result.null_field_counts)
                     for mapping in family.mappings:
                         target_field_totals.update([mapping.target_field])
-                    if quarantine is not None:
-                        quarantine_f.write(quarantine.model_dump_json() + '\n')
+                    if result.quarantine is not None:
+                        quarantine_f.write(result.quarantine.model_dump_json() + '\n')
                         rows_quarantined += 1
-                        error_counts.update(quarantine.failure_reasons)
-                    elif doc is not None:
-                        payload = json.dumps(doc, ensure_ascii=False)
+                        error_counts.update(result.quarantine.failure_reasons)
+                    elif result.doc is not None:
+                        payload = json.dumps(result.doc, ensure_ascii=False)
                         accepted_f.write(payload + '\n')
                         if family.family_id not in family_file_handles:
                             fam_path = family_dir / f'{family.family_id}.ndjson'
@@ -423,6 +471,7 @@ def ingest_bundle_to_ndjson(
         if total:
             field_null_rates[field] = null_field_counts.get(field, 0) / total
 
+    logger.info("ingest complete source_name=%s rows_seen=%d rows_written=%d rows_quarantined=%d", source_name, rows_seen, rows_written, rows_quarantined)
     stats = {
         'status': 'ok',
         'file_format': file_format,
