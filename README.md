@@ -284,18 +284,6 @@ It does not do entity resolution, investigative reasoning, or final evidential i
 
 The design rationale behind the prompting and correspondence model lives in `docs/research-notes.md`.
 
-## Repo polish
-
-A tidy public repo usually needs a few basics besides code:
-
-- a short, plain-language description at the top
-- visible status badges
-- clear model options, including current Gemma 4 links
-- a direct quick start that works
-- explicit boundaries so people know what the tool does not claim to do
-
-This README aims to cover those without turning into marketing sludge.
-
 ## Tests
 
 ```bash
