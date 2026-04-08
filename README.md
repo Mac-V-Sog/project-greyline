@@ -69,7 +69,7 @@ Typical use cases include:
 - per-run ingest stats with row counts, errors, coercions, and family breakdowns
 - health checks for Ollama reachability and model availability
 - path traversal protection for user-supplied output paths
-- upload file size limits (500 MB max)
+- configurable upload size limit via `MAX_UPLOAD_BYTES` environment variable (no limit by default, since streaming handles large files efficiently)
 - structured logging across all modules (greyline.* namespace)
 - shared pattern detection module for consistent phone/datetime/identifier recognition
 
@@ -314,7 +314,7 @@ The test suite covers profiling, mapping, validation, ingest, family classificat
 - **Maintainability**: Extracted 9 magic confidence thresholds in validator to named constants with rationale comments
 - **Observability**: Added structured logging (`greyline.*` namespace) across all modules
 - **Infrastructure**: Moved `init_db()` and `OUTPUT_DIR` creation from import-time to FastAPI lifespan; fixed async event loop blocking with `run_in_threadpool()`
-- **Security**: Added path traversal validation for output paths; added 500 MB upload size limit; consolidated project naming (database now `greyline.db`)
+- **Security**: Added path traversal validation for output paths; added configurable upload size limit via `MAX_UPLOAD_BYTES` env var (no hard limit by default); consolidated project naming (database now `greyline.db`)
 - **Test coverage**: Added 46 new tests — total 61 — covering memory, family classifier, API endpoints, patterns, and shape fingerprinting
 
 ## License

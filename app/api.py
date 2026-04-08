@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -17,13 +18,24 @@ from app.validator import validate_proposal
 
 logger = logging.getLogger("greyline.api")
 
-MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+# Optional upload size limit in bytes. Set via MAX_UPLOAD_BYTES env var.
+# Defaults to None (no limit) since Greyline streams large files efficiently.
+# Example: MAX_UPLOAD_BYTES=5368709120 for a 5 GB limit.
+MAX_UPLOAD_BYTES: int | None = None
+_env_limit = os.getenv("MAX_UPLOAD_BYTES")
+if _env_limit is not None:
+    try:
+        MAX_UPLOAD_BYTES = int(_env_limit)
+    except ValueError:
+        pass
 
 router = APIRouter()
 
 
 async def _check_upload_size(file: UploadFile) -> None:
     """Raise HTTPException if the uploaded file exceeds MAX_UPLOAD_BYTES."""
+    if MAX_UPLOAD_BYTES is None:
+        return
     file.file.seek(0, 2)  # seek to end
     size = file.file.tell()
     file.file.seek(0)  # reset to start
