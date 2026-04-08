@@ -23,7 +23,7 @@ Greyline is meant for situations where the hard part is not opening a CSV. The h
 Typical use cases include:
 
 - large AXIOM-style or other forensic exports
-- telecom datasets with inconsistent field names and formats
+- CDRs with inconsistent field names and formats
 - mixed exports containing more than one record family
 - ingestion front ends for search or analytics platforms such as Elasticsearch
 - lawful processing environments where provenance and repeatability matter
